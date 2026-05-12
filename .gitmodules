@@ -1,0 +1,7 @@
+[submodule "ref/QuickApply"]
+	path = ref/QuickApply
+	url = https://github.com/qpwm06/QuickApply.git
+[submodule "ref/goremote.io"]
+	path = ref/goremote.io
+	url = https://github.com/ashleyhindle/goremote.io.git
+
