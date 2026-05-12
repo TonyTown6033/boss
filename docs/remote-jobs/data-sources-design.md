@@ -2,7 +2,7 @@
 
 ## 目标
 
-在现有 `remote/scripts/scrape_remotejobscn.py` 和 `remote/scripts/screen_remotejobscn_jobs.py` 基础上，新增多个远程程序员岗位数据源，统一输出到 `remote/data/`，供 `job-screening-prompt.md` 和筛选脚本继续使用。
+在现有 `remote/scripts/scrape_remotejobscn.py` 和 `remote/scripts/screen_remotejobscn_jobs.py` 基础上，新增多个远程程序员岗位数据源，统一输出到 `remote/data/` 的 JSON 数据结构，供 `job-screening-prompt.md` 和筛选脚本继续使用。
 
 ## 当前缺口
 
@@ -17,11 +17,13 @@
   - Remotive Remote Jobs API
   - RemoteOK JSON API
 - 新增采集脚本应使用 `uv` / `pyenv` 管理 Python 环境，保持无浏览器依赖。
-- 统一输出字段采用现有 RemoteJobsCN 风格，优先保证筛选脚本能复用。
-- 原始数据和 latest 文件都落到 `remote/data/`。
+- 统一输出字段采用多源远程岗位 schema，优先保证筛选脚本能复用。
+- 长期持久化只保留 JSON，CSV/MD 作为 legacy archive 或后续按需导出产物。
+- 最新数据落到 `remote/data/latest/`，历史快照落到 `remote/data/snapshots/`。
 - 自动打分结果只能作为初筛，最终推荐仍按提示词的保守口径复核。
 - 新增聚合脚本为 `remote/scripts/scrape_remote_jobs.py`，不替换现有 RemoteJobsCN 专用脚本。
-- 筛选脚本 `remote/scripts/screen_remotejobscn_jobs.py` 保留默认 RemoteJobsCN 输入，同时支持通过 `--input` 筛选聚合数据。
+- 筛选脚本 `remote/scripts/screen_remotejobscn_jobs.py` 默认读取 `remote/data/latest/normalized_remote_jobs.json`。
+- 旧 RemoteJobsCN 专用脚本继续可用，但输出写入 `remote/data/archives/legacy/remotejobscn/`，避免污染新数据根目录。
 
 ## 数据源接入约束
 
@@ -45,6 +47,7 @@
 | 字段 | 含义 |
 |---|---|
 | `id` | 来源内唯一 ID 或 URL hash |
+| `source_job_id` | 来源站原始岗位 ID |
 | `title` | 岗位名 |
 | `company` | 公司名 |
 | `source` | 数据源名称 |
@@ -56,16 +59,17 @@
 | `categories` | 分类、标签、技能 |
 | `job_url` | 岗位详情或申请链接 |
 | `description` | JD 文本 |
+| `raw` | 来源站原始 payload |
 
 ## 文件输出
 
-- 聚合原始 CSV：`remote/data/remote_jobs_latest.csv`
-- 聚合原始 JSON：`remote/data/remote_jobs_latest.json`
-- 聚合原始 Markdown：`remote/data/remote_jobs_latest.md`
-- 带时间戳版本：`remote/data/remote_jobs_YYYYMMDD_HHMMSS.csv/json`
-- 筛选结果继续输出：
-  - `remote/data/remotejobscn_screened_latest.csv`
-  - `remote/data/remotejobscn_screened_latest.md`
+- 最新原始数据：`remote/data/latest/raw_remote_jobs.json`
+- 最新归一化数据：`remote/data/latest/normalized_remote_jobs.json`
+- 最新筛选结果：`remote/data/latest/screened_remote_jobs.json`
+- 原始快照：`remote/data/snapshots/raw/YYYYMMDD_HHMMSS_remote_jobs.json`
+- 归一化快照：`remote/data/snapshots/normalized/YYYYMMDD_HHMMSS_remote_jobs.json`
+- 筛选快照：`remote/data/snapshots/screened/YYYYMMDD_HHMMSS_remote_jobs.json`
+- 历史旧文件：`remote/data/archives/legacy/`
 
 ## 运行方式
 
@@ -73,10 +77,7 @@
 
 ```bash
 uv run python remote/scripts/scrape_remote_jobs.py --sources all --keyword python --limit 50
-uv run python remote/scripts/screen_remotejobscn_jobs.py \
-  --input remote/data/remote_jobs_latest.csv \
-  --out-csv remote/data/remote_jobs_screened_latest.csv \
-  --out-md remote/data/remote_jobs_screened_latest.md
+uv run python remote/scripts/screen_remotejobscn_jobs.py
 ```
 
 只抓单个源：
@@ -88,7 +89,7 @@ uv run python remote/scripts/scrape_remote_jobs.py --sources himalayas --keyword
 ## 接受标准
 
 - 能用一个脚本抓取至少一个新增公开 API 数据源并落盘。
-- 输出 CSV/JSON 字段稳定，能被后续筛选流程读取。
+- 输出 JSON 字段稳定，能被后续筛选流程读取。
 - 采集脚本支持选择 source、keyword、limit 等基本参数。
 - 网络失败、字段缺失、重复岗位不会导致整批任务崩溃。
 - README 或脚本帮助信息能说明基本运行方式。

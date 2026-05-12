@@ -12,7 +12,8 @@ from pathlib import Path
 
 
 BASE_URL = "https://remotejobscn.com"
-OUT_DIR = Path("data")
+REMOTE_DIR = Path(__file__).resolve().parents[1]
+OUT_DIR = REMOTE_DIR / "data" / "archives" / "legacy" / "remotejobscn"
 USER_AGENT = "Mozilla/5.0 (compatible; RemoteJobsCNResearch/1.0)"
 
 

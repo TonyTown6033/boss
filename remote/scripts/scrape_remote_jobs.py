@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import csv
 import datetime as dt
 import hashlib
 import html
@@ -50,14 +49,14 @@ def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def join_values(values: Any) -> str:
+def list_values(values: Any) -> list[str]:
     if not values:
-        return ""
+        return []
     if isinstance(values, str):
-        return values
+        return [values]
     if isinstance(values, (list, tuple, set)):
-        return ",".join(clean_text(v) for v in values if clean_text(v))
-    return clean_text(values)
+        return [clean_text(v) for v in values if clean_text(v)]
+    return [clean_text(values)]
 
 
 def epoch_to_date(value: Any) -> str:
@@ -113,10 +112,13 @@ def normalize_job(
     categories: Any = None,
     job_url: Any = "",
     description: Any = "",
-) -> dict[str, str]:
+    raw: Any = None,
+) -> dict[str, Any]:
     url = clean_text(job_url)
+    clean_source_id = clean_text(source_id)
     return {
-        "id": stable_id(source, source_id, url),
+        "id": stable_id(source, clean_source_id, url),
+        "source_job_id": clean_source_id,
         "title": clean_text(title),
         "company": clean_text(company),
         "source": source,
@@ -125,14 +127,15 @@ def normalize_job(
         "type": clean_text(employment_type),
         "salary": clean_text(salary) or "未明确",
         "date_posted": epoch_to_date(date_posted),
-        "categories": join_values(categories),
+        "categories": list_values(categories),
         "job_url": url,
         "description": clean_text(description),
+        "raw": raw if raw is not None else {},
     }
 
 
-def scrape_himalayas(keyword: str, limit: int) -> list[dict[str, str]]:
-    jobs: list[dict[str, str]] = []
+def scrape_himalayas(keyword: str, limit: int) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
     page = 1
     while len(jobs) < limit:
         params = {"sort": "recent", "page": str(page)}
@@ -150,7 +153,7 @@ def scrape_himalayas(keyword: str, limit: int) -> list[dict[str, str]]:
                 currency=item.get("currency"),
                 period="year",
             )
-            remote = join_values(item.get("locationRestrictions")) or "全球远程"
+            remote = ",".join(list_values(item.get("locationRestrictions"))) or "全球远程"
             categories = (item.get("categories") or []) + (item.get("seniority") or [])
             jobs.append(
                 normalize_job(
@@ -166,6 +169,7 @@ def scrape_himalayas(keyword: str, limit: int) -> list[dict[str, str]]:
                     categories=categories,
                     job_url=item.get("applicationLink") or item.get("guid"),
                     description=item.get("description") or item.get("excerpt"),
+                    raw=item,
                 )
             )
             if len(jobs) >= limit:
@@ -178,7 +182,7 @@ def scrape_himalayas(keyword: str, limit: int) -> list[dict[str, str]]:
     return jobs
 
 
-def scrape_remotive(keyword: str, limit: int) -> list[dict[str, str]]:
+def scrape_remotive(keyword: str, limit: int) -> list[dict[str, Any]]:
     params = {}
     if keyword:
         params["search"] = keyword
@@ -207,12 +211,13 @@ def scrape_remotive(keyword: str, limit: int) -> list[dict[str, str]]:
                 categories=categories,
                 job_url=item.get("url"),
                 description=item.get("description"),
+                raw=item,
             )
         )
     return jobs
 
 
-def scrape_remoteok(keyword: str, limit: int) -> list[dict[str, str]]:
+def scrape_remoteok(keyword: str, limit: int) -> list[dict[str, Any]]:
     data = fetch_json("https://remoteok.com/api")
     items = data if isinstance(data, list) else []
     jobs = []
@@ -224,7 +229,7 @@ def scrape_remoteok(keyword: str, limit: int) -> list[dict[str, str]]:
             [
                 clean_text(item.get("position")),
                 clean_text(item.get("company")),
-                join_values(item.get("tags")),
+                " ".join(list_values(item.get("tags"))),
                 clean_text(item.get("description")),
             ]
         ).lower()
@@ -251,6 +256,7 @@ def scrape_remoteok(keyword: str, limit: int) -> list[dict[str, str]]:
                 categories=categories,
                 job_url=item.get("url") or f"https://remoteok.com/remote-jobs/{item.get('id')}",
                 description=item.get("description"),
+                raw=item,
             )
         )
         if len(jobs) >= limit:
@@ -258,7 +264,7 @@ def scrape_remoteok(keyword: str, limit: int) -> list[dict[str, str]]:
     return jobs
 
 
-def dedupe_jobs(jobs: list[dict[str, str]]) -> list[dict[str, str]]:
+def dedupe_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen = set()
     result = []
     for job in jobs:
@@ -270,86 +276,38 @@ def dedupe_jobs(jobs: list[dict[str, str]]) -> list[dict[str, str]]:
     return result
 
 
-def write_outputs(jobs: list[dict[str, str]], out_dir: Path, prefix: str) -> dict[str, str]:
-    out_dir.mkdir(parents=True, exist_ok=True)
+def write_outputs(jobs: list[dict[str, Any]], out_dir: Path, sources: list[str], errors: dict[str, str]) -> dict[str, str]:
+    latest_dir = out_dir / "latest"
+    raw_snapshot_dir = out_dir / "snapshots" / "raw"
+    normalized_snapshot_dir = out_dir / "snapshots" / "normalized"
+    for directory in [latest_dir, raw_snapshot_dir, normalized_snapshot_dir]:
+        directory.mkdir(parents=True, exist_ok=True)
+
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
-    base = out_dir / f"{prefix}_{stamp}"
-    latest_base = out_dir / f"{prefix}_latest"
+    scraped_at = dt.datetime.now(dt.UTC).isoformat()
 
     payload = {
-        "source": "himalayas,remotive,remoteok",
-        "scraped_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "scraped_at_utc": scraped_at,
+        "sources": sources,
         "count": len(jobs),
+        "errors": errors,
         "jobs": jobs,
     }
 
-    json_path = base.with_suffix(".json")
-    csv_path = base.with_suffix(".csv")
-    md_path = base.with_suffix(".md")
-    latest_json = latest_base.with_suffix(".json")
-    latest_csv = latest_base.with_suffix(".csv")
-    latest_md = latest_base.with_suffix(".md")
+    raw_snapshot = raw_snapshot_dir / f"{stamp}_remote_jobs.json"
+    normalized_snapshot = normalized_snapshot_dir / f"{stamp}_remote_jobs.json"
+    latest_raw = latest_dir / "raw_remote_jobs.json"
+    latest_normalized = latest_dir / "normalized_remote_jobs.json"
 
     json_text = json.dumps(payload, ensure_ascii=False, indent=2)
-    json_path.write_text(json_text, encoding="utf-8")
-    latest_json.write_text(json_text, encoding="utf-8")
-
-    fieldnames = [
-        "id",
-        "title",
-        "company",
-        "source",
-        "source_url",
-        "remote",
-        "type",
-        "salary",
-        "date_posted",
-        "categories",
-        "job_url",
-        "description",
-    ]
-    for path in [csv_path, latest_csv]:
-        with path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(jobs)
-
-    lines = [
-        "# Remote Jobs",
-        "",
-        f"- scraped_at_utc: {payload['scraped_at_utc']}",
-        f"- count: {len(jobs)}",
-        "",
-    ]
-    for index, job in enumerate(jobs, 1):
-        lines.extend(
-            [
-                f"## {index}. {job.get('title') or '(untitled)'}",
-                "",
-                f"- company: {job.get('company')}",
-                f"- source: {job.get('source')}",
-                f"- date_posted: {job.get('date_posted')}",
-                f"- remote: {job.get('remote')}",
-                f"- type: {job.get('type')}",
-                f"- salary: {job.get('salary')}",
-                f"- categories: {job.get('categories')}",
-                f"- job_url: {job.get('job_url')}",
-                "",
-                clean_text(job.get("description") or ""),
-                "",
-            ]
-        )
-    md_text = "\n".join(lines)
-    md_path.write_text(md_text, encoding="utf-8")
-    latest_md.write_text(md_text, encoding="utf-8")
+    for path in [raw_snapshot, normalized_snapshot, latest_raw, latest_normalized]:
+        path.write_text(json_text, encoding="utf-8")
 
     return {
-        "json": str(json_path),
-        "csv": str(csv_path),
-        "md": str(md_path),
-        "latest_json": str(latest_json),
-        "latest_csv": str(latest_csv),
-        "latest_md": str(latest_md),
+        "raw_snapshot": str(raw_snapshot),
+        "normalized_snapshot": str(normalized_snapshot),
+        "latest_raw": str(latest_raw),
+        "latest_normalized": str(latest_normalized),
     }
 
 
@@ -364,15 +322,15 @@ def parse_sources(value: str) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Scrape public remote job APIs into a unified CSV/JSON schema.")
+    parser = argparse.ArgumentParser(description="Scrape public remote job APIs into the JSON data layout.")
     parser.add_argument("--sources", type=parse_sources, default=list(SOURCES), help="Comma-separated sources: himalayas,remotive,remoteok, or all.")
     parser.add_argument("--keyword", default="python", help="Keyword used by supported sources and client-side filtering.")
     parser.add_argument("--limit", type=int, default=50, help="Maximum jobs per source.")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory.")
-    parser.add_argument("--prefix", default="remote_jobs", help="Output filename prefix.")
+    parser.add_argument("--prefix", default="remote_jobs", help="Deprecated; kept for CLI compatibility.")
     args = parser.parse_args()
 
-    jobs: list[dict[str, str]] = []
+    jobs: list[dict[str, Any]] = []
     errors: dict[str, str] = {}
 
     source_funcs = {
@@ -390,7 +348,7 @@ def main() -> int:
             print(f"source={source} error={exc}")
 
     jobs = dedupe_jobs(jobs)
-    outputs = write_outputs(jobs, args.out_dir, args.prefix)
+    outputs = write_outputs(jobs, args.out_dir, args.sources, errors)
     print(json.dumps({"count": len(jobs), "errors": errors, "outputs": outputs}, ensure_ascii=False, indent=2))
     return 1 if errors and not jobs else 0
 

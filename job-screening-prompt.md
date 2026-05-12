@@ -59,25 +59,22 @@
 
 1. 优先从 `remote/data/` 读取岗位数据，不要求我把岗位数据粘贴到对话里。
 2. `remote/data/` 是我爬取到的远程岗位数据目录，常见文件包括：
-   - `remotejobscn_jobs_latest.csv`
-   - `remotejobscn_jobs_latest.json`
-   - `remotejobscn_jobs_latest.md`
-   - `remotejobscn_jobs_*.csv`
-   - `remotejobscn_jobs_*.json`
-   - `remotejobscn_jobs_*.md`
-   - `remotejobscn_screened_latest.csv`
-   - `remotejobscn_screened_latest.md`
-   - `top3_remotejobscn_position_brief.md`
-   - `top3_remotejobscn_authenticity_check.md`
-3. 默认优先使用 `remote/data/remotejobscn_jobs_latest.csv` 或 `remote/data/remotejobscn_jobs_latest.json` 作为输入；如果最新文件不存在，再按文件名时间戳选择最新的 `remotejobscn_jobs_*` 原始数据文件。
+   - `latest/raw_remote_jobs.json`
+   - `latest/normalized_remote_jobs.json`
+   - `latest/screened_remote_jobs.json`
+   - `snapshots/raw/YYYYMMDD_HHMMSS_remote_jobs.json`
+   - `snapshots/normalized/YYYYMMDD_HHMMSS_remote_jobs.json`
+   - `snapshots/screened/YYYYMMDD_HHMMSS_remote_jobs.json`
+   - `archives/legacy/`
+3. 默认优先使用 `remote/data/latest/normalized_remote_jobs.json` 作为输入；如果 latest 不存在，再按文件名时间戳选择最新的 `remote/data/snapshots/normalized/*_remote_jobs.json`。
 4. `remote/scripts/` 下面是可使用的工具脚本，可以阅读、复用或改造：
-   - `remote/scripts/scrape_remotejobscn.py`：抓取 RemoteJobsCN 岗位数据
-   - `remote/scripts/screen_remotejobscn_jobs.py`：对 RemoteJobsCN 岗位进行规则筛选并生成结果
-5. 如果已有 `remote/data/remotejobscn_screened_latest.csv` 或 `remote/data/remotejobscn_screened_latest.md`，可以参考其历史筛选口径，但不能无脑沿用结论；必须结合最新原始岗位数据重新判断。
-6. 输出结果默认落到 `remote/data/`，建议文件名：
-   - CSV：`remote/data/remotejobscn_screened_latest.csv`
-   - Markdown：`remote/data/remotejobscn_screened_latest.md`
-   - 如需保留时间戳版本，可同时生成 `remote/data/remotejobscn_screened_YYYYMMDD_HHMMSS.csv` 和 `remote/data/remotejobscn_screened_YYYYMMDD_HHMMSS.md`
+   - `remote/scripts/scrape_remotejobscn.py`：抓取 RemoteJobsCN 岗位数据并归档到 legacy
+   - `remote/scripts/scrape_remote_jobs.py`：抓取 Himalayas / Remotive / RemoteOK 并输出统一 JSON
+   - `remote/scripts/screen_remotejobscn_jobs.py`：对统一 JSON 岗位进行规则筛选并生成 JSON 结果
+5. 如果已有 `remote/data/latest/screened_remote_jobs.json`，可以参考其历史筛选口径，但不能无脑沿用结论；必须结合最新归一化岗位数据重新判断。
+6. 输出结果默认落到：
+   - 最新结果：`remote/data/latest/screened_remote_jobs.json`
+   - 时间戳快照：`remote/data/snapshots/screened/YYYYMMDD_HHMMSS_remote_jobs.json`
 7. 可以使用 subagents 并行处理：
    - 一个 subagent 负责检查原始数据字段、重复岗位、异常薪资、疑似中介/广告
    - 一个 subagent 负责按岗位方向筛选高匹配岗位，例如 Python / DevOps / AI Agent / 数据处理 / 工业软件
@@ -218,5 +215,5 @@ F. 风险标签
 
 以下是岗位数据来源：
 
-从 `remote/data/` 中读取最新岗位数据；不要等待我手动粘贴。读取后先说明使用了哪个输入文件、总岗位数、输出文件路径，再开始筛选。
+从 `remote/data/latest/normalized_remote_jobs.json` 中读取最新岗位数据；不要等待我手动粘贴。读取后先说明使用了哪个输入文件、总岗位数、输出文件路径，再开始筛选。
 ```

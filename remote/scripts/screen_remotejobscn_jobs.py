@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import datetime as dt
+import json
 import re
 from pathlib import Path
+from typing import Any
 
 
 REMOTE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = REMOTE_DIR / "data"
-DEFAULT_INPUT = DATA_DIR / "remotejobscn_jobs_latest.csv"
-DEFAULT_OUT_CSV = DATA_DIR / "remotejobscn_screened_latest.csv"
-DEFAULT_OUT_MD = DATA_DIR / "remotejobscn_screened_latest.md"
+DEFAULT_INPUT = DATA_DIR / "latest" / "normalized_remote_jobs.json"
+DEFAULT_OUT_JSON = DATA_DIR / "latest" / "screened_remote_jobs.json"
+DEFAULT_SNAPSHOT_DIR = DATA_DIR / "snapshots" / "screened"
 
 
 GOOD_TERMS = {
@@ -139,6 +142,16 @@ def contains_any(text, terms):
     return [term for term in terms if term.lower() in text.lower()]
 
 
+def field_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return " ".join(field_text(item) for item in value)
+    if isinstance(value, dict):
+        return " ".join(field_text(item) for item in value.values())
+    return str(value)
+
+
 def snippet(text, terms):
     compact = re.sub(r"\s+", " ", text).strip()
     for term in terms:
@@ -151,7 +164,7 @@ def snippet(text, terms):
 
 
 def score_row(idx, row, use_row_overrides=False):
-    text = " ".join([row.get("title", ""), row.get("company", ""), row.get("categories", ""), row.get("description", "")])
+    text = " ".join([field_text(row.get("title")), field_text(row.get("company")), field_text(row.get("categories")), field_text(row.get("description"))])
     matched_good = contains_any(text, GOOD_TERMS.keys())
     matched_bad = contains_any(text, BAD_TERMS.keys())
     danger = contains_any(text, DANGER_TERMS)
@@ -173,9 +186,9 @@ def score_row(idx, row, use_row_overrides=False):
     real -= 18 if "具体岗位职责需咨询" in text or "简历直通车" in text or "多个岗位" in text else 0
 
     match = 38 + min(45, good_score) - min(35, bad_score // 2)
-    if "远程" in row.get("categories", "") or "Remote" in row.get("remote", "") or "全球远程" in row.get("remote", ""):
+    if "远程" in field_text(row.get("categories")) or "Remote" in field_text(row.get("remote")) or "全球远程" in field_text(row.get("remote")):
         match += 4
-    if "Web3" in row.get("categories", "") and not any(t in matched_good for t in ["Python", "DevOps", "SRE", "AI Agent", "API", "SQL", "数据分析", "AWS"]):
+    if "Web3" in field_text(row.get("categories")) and not any(t in matched_good for t in ["Python", "DevOps", "SRE", "AI Agent", "API", "SQL", "数据分析", "AWS"]):
         match -= 8
 
     pass_rate = 0.45 * match + 0.35 * real + 10
@@ -229,6 +242,8 @@ def score_row(idx, row, use_row_overrides=False):
         "evidence": snippet(row.get("description", ""), matched_good + matched_bad + ["岗位职责", "职责描述"]),
         "keywords": "",
         "job_url": row.get("job_url", ""),
+        "source": row.get("source", ""),
+        "id": row.get("id", ""),
     }
 
     override = OVERRIDES.get(idx) if use_row_overrides else None
@@ -243,8 +258,8 @@ def score_row(idx, row, use_row_overrides=False):
 
 
 def risk_tags(result, row, danger):
-    text = row.get("title", "") + " " + row.get("description", "") + " " + row.get("source", "")
-    title_scope = row.get("title", "") + " " + row.get("categories", "")
+    text = field_text(row.get("title")) + " " + field_text(row.get("description")) + " " + field_text(row.get("source"))
+    title_scope = field_text(row.get("title")) + " " + field_text(row.get("categories"))
     tags = []
     if danger:
         tags.append("疑似虚假广告")
@@ -272,7 +287,7 @@ def risk_tags(result, row, danger):
 
 
 def keyword_advice(result, row):
-    text = row.get("title", "") + " " + row.get("description", "")
+    text = field_text(row.get("title")) + " " + field_text(row.get("description"))
     parts = []
     if any(t in text for t in ["DevOps", "SRE", "CI/CD", "可观测", "Prometheus", "告警", "高可用", "稳定性"]):
         parts.append("突出华为：Linux 后端、高可用、自愈系统、日志排查、CI/CD、线上问题定位")
@@ -289,137 +304,58 @@ def keyword_advice(result, row):
     return "；".join(dict.fromkeys(parts))
 
 
-def md_escape(value):
-    return str(value).replace("|", "\\|").replace("\n", " ").strip()
-
-
-def write_outputs(rows, screened, input_path, out_csv, out_md):
-    fields = [
-        "序号",
-        "公司",
-        "岗位",
-        "城市",
-        "薪资",
-        "岗位真实性",
-        "简历匹配度",
-        "简历通过率",
-        "现金流价值",
-        "长期路线价值",
-        "投递建议",
-        "风险标签",
-        "证据",
-        "简历关键词建议",
-        "job_url",
-    ]
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    with out_csv.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(fields)
-        for r in screened:
-            writer.writerow([
-                r["idx"],
-                r["company"],
-                r["title"],
-                r["city"],
-                r["salary"],
-                r["real"],
-                r["match"],
-                r["pass_rate"],
-                r["cash"],
-                r["long"],
-                r["advice"],
-                r["risk_tags"],
-                r["evidence"],
-                r["keywords"],
-                r["job_url"],
-            ])
-
+def write_outputs(rows, screened, input_path, out_json, snapshot_dir):
     recommended = [r for r in screened if r["advice"] in ["强烈优先投", "可以投"]]
     top_apply = sorted(recommended, key=lambda r: (r["pass_rate"] + r["cash"] + r["long"] + r["match"]), reverse=True)[:10]
     top_delete = sorted([r for r in screened if r["advice"] == "删除"], key=lambda r: (r["match"], r["pass_rate"]))[:10]
     top_cash = sorted([r for r in screened if r["advice"] in ["强烈优先投", "可以投", "低优先级投"]], key=lambda r: r["cash"], reverse=True)[:10]
 
-    lines = [
-        "# 远程岗位筛选结果",
-        "",
-        f"- 输入文件: `{input_path}`",
-        f"- 岗位数: {len(screened)}",
-        f"- 输出 CSV: `{out_csv}`",
-        "",
-        "## 完整评分表",
-        "",
-        "| 序号 | 公司 | 岗位 | 城市 | 薪资 | 岗位真实性 | 简历匹配度 | 简历通过率 | 现金流价值 | 长期路线价值 | 投递建议 | 风险标签 | 证据 | 简历关键词建议 |",
-        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
-    ]
-    for r in screened:
-        lines.append(
-            "| "
-            + " | ".join(
-                md_escape(x)
-                for x in [
-                    r["idx"],
-                    r["company"],
-                    r["title"],
-                    r["city"],
-                    r["salary"],
-                    r["real"],
-                    r["match"],
-                    r["pass_rate"],
-                    r["cash"],
-                    r["long"],
-                    r["advice"],
-                    r["risk_tags"],
-                    r["evidence"],
-                    r["keywords"],
-                ]
-            )
-            + " |"
-        )
+    payload = {
+        "screened_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "input": str(input_path),
+        "count": len(screened),
+        "results": screened,
+        "summary": {
+            "top_apply": top_apply,
+            "top_delete": top_delete,
+            "top_cash": top_cash,
+            "best_directions": [
+                "DevOps / SRE / 可观测 / 平台工程",
+                "Python 后端 / AI Agent / API 服务",
+                "Python 自动化 / 数据处理 / 内部效率工具",
+            ],
+            "keywords_to_strengthen": "Python、FastAPI、API 服务、AI workflow、Agent 工程化、Linux、Docker、Nginx、CI/CD、GitHub Actions、DevOps、SRE、可观测、Prometheus、日志分析、线上问题定位、自动化脚本、数据清洗、SQL、内部平台、企业效率工具、985 本科。",
+            "keywords_to_reduce": "通信行业叙事、运营商核心网、纯设备维护、泛泛 CTO 头衔、过多管理表述、与岗位无关的产品/市场/销售描述、没有结果指标的创业故事。",
+        },
+    }
 
-    def add_top(title, items):
-        lines.extend(["", f"## {title}", ""])
-        for i, r in enumerate(items, 1):
-            lines.append(f"{i}. {r['company']} - {r['title']}｜{r['advice']}｜通过率 {r['pass_rate']}｜现金流 {r['cash']}｜{r['job_url']}")
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
+    snapshot_json = snapshot_dir / f"{stamp}_remote_jobs.json"
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    out_json.write_text(text, encoding="utf-8")
+    snapshot_json.write_text(text, encoding="utf-8")
+    return snapshot_json
 
-    add_top("Top 10 最值得投递岗位", top_apply)
-    add_top("Top 10 应该删除岗位", top_delete)
-    add_top("Top 10 可作为现金流岗位", top_cash)
 
-    lines.extend(
-        [
-            "",
-            "## 最适合的 3 类岗位方向",
-            "",
-            "1. DevOps / SRE / 可观测 / 平台工程：能承接华为 Linux、高可用、自愈系统、日志排查、CI/CD 和线上问题定位经历。",
-            "2. Python 后端 / AI Agent / API 服务：能承接创业 CTO 的 Python/FastAPI、AI workflow、知识图谱、接口与平台交付经历。",
-            "3. Python 自动化 / 数据处理 / 内部效率工具：能承接 Foxconn 设备异常分析、日志分析、数据清洗、自动化工具和企业内部系统经历。",
-            "",
-            "## 简历应该统一强化的关键词",
-            "",
-            "Python、FastAPI、API 服务、AI workflow、Agent 工程化、Linux、Docker、Nginx、CI/CD、GitHub Actions、DevOps、SRE、可观测、Prometheus、日志分析、线上问题定位、自动化脚本、数据清洗、SQL、内部平台、企业效率工具、985 本科。",
-            "",
-            "## 应该弱化或删除的简历关键词",
-            "",
-            "通信行业叙事、运营商核心网、纯设备维护、泛泛 CTO 头衔、过多管理表述、与岗位无关的产品/市场/销售描述、没有结果指标的创业故事。",
-            "",
-            "## 当前最现实的策略",
-            "",
-            "先集中投 Python 后端/自动化、DevOps/SRE、AI Agent 工程化岗位；远程岗位里优先投有明确技术栈和交付内容的中小团队兼职/全职，Web3 岗位只投 DevOps、SRE、Python、数据分析这类可复用技术岗，纯运营、BD、客服、设计直接跳过。",
-            "",
-            "## 下一轮 BOSS 直聘搜索关键词",
-            "",
-            "Python 后端、Python 自动化、FastAPI、AI Agent、LLM 应用开发、AI 工程化、DevOps、SRE、运维开发、平台工程、CI/CD、Linux 后端、自动化测试、测试开发、数据处理、日志分析、工业软件、上位机、MES、设备数据采集、内部工具开发。",
-            "",
-        ]
-    )
-    out_md.write_text("\n".join(lines), encoding="utf-8")
+def read_jobs(input_path):
+    if input_path.suffix.lower() == ".json":
+        data = json.loads(input_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data.get("jobs") or data.get("results") or []
+        if isinstance(data, list):
+            return data
+        return []
+    with input_path.open(encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Screen remote jobs CSV with the conservative job-screening rules.")
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Input CSV path.")
-    parser.add_argument("--out-csv", type=Path, default=DEFAULT_OUT_CSV, help="Output screened CSV path.")
-    parser.add_argument("--out-md", type=Path, default=DEFAULT_OUT_MD, help="Output screened Markdown path.")
+    parser = argparse.ArgumentParser(description="Screen remote jobs JSON with the conservative job-screening rules.")
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Input JSON path.")
+    parser.add_argument("--out-json", type=Path, default=DEFAULT_OUT_JSON, help="Latest screened JSON output path.")
+    parser.add_argument("--snapshot-dir", type=Path, default=DEFAULT_SNAPSHOT_DIR, help="Screened snapshot directory.")
     parser.add_argument(
         "--use-row-overrides",
         action="store_true",
@@ -427,14 +363,13 @@ def main():
     )
     args = parser.parse_args()
 
-    with args.input.open(encoding="utf-8", newline="") as f:
-        rows = list(csv.DictReader(f))
+    rows = read_jobs(args.input)
     use_row_overrides = args.use_row_overrides or args.input.name.startswith("remotejobscn_")
     screened = [score_row(i, row, use_row_overrides=use_row_overrides) for i, row in enumerate(rows, 1)]
-    write_outputs(rows, screened, args.input, args.out_csv, args.out_md)
+    snapshot_json = write_outputs(rows, screened, args.input, args.out_json, args.snapshot_dir)
     print(f"screened={len(screened)}")
-    print(f"csv={args.out_csv}")
-    print(f"md={args.out_md}")
+    print(f"json={args.out_json}")
+    print(f"snapshot={snapshot_json}")
 
 
 if __name__ == "__main__":
